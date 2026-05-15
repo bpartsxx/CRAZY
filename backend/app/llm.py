@@ -1,7 +1,7 @@
 """LLM wrapper for message summarization.
 
-Uses NVIDIA's OpenAI-compatible API (https://integrate.api.nvidia.com/v1).
-To swap to a different provider, just change `BASE_URL` and `MODEL`.
+Uses Google Gemini via its OpenAI-compatible endpoint.
+To swap providers, change BASE_URL, MODEL, and the API key env var.
 """
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://integrate.api.nvidia.com/v1"
-MODEL = "deepseek-ai/deepseek-v4-pro"
+BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """You are an assistant that summarizes work-channel conversations \
 for a busy professional. Given a transcript of recent messages from a single channel, \
@@ -34,9 +34,9 @@ _client: AsyncOpenAI | None = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        if not settings.nvidia_api_key:
-            raise RuntimeError("NVIDIA_API_KEY not set")
-        _client = AsyncOpenAI(base_url=BASE_URL, api_key=settings.nvidia_api_key)
+        if not settings.google_api_key:
+            raise RuntimeError("GOOGLE_API_KEY not set")
+        _client = AsyncOpenAI(base_url=BASE_URL, api_key=settings.google_api_key)
     return _client
 
 
@@ -61,8 +61,6 @@ async def summarize_messages(channel_name: str, messages: list[dict]) -> str:
             {"role": "user", "content": user_content},
         ],
         temperature=0.5,
-        top_p=0.95,
         max_tokens=1024,
-        extra_body={"chat_template_kwargs": {"thinking": False}},
     )
     return (resp.choices[0].message.content or "").strip()
