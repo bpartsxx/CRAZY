@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import json
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..config import settings
 from ..db import get_db
 from ..integrations.slack import SlackClient, SlackError, exchange_oauth_code
-from ..llm import summarize_messages
+from ..llm import stream_summary, summarize_messages
 
 router = APIRouter(prefix="/slack", tags=["slack"])
 
@@ -44,8 +45,7 @@ def list_messages(channel_pk: int, limit: int = 50, db: Session = Depends(get_db
     )
 
 
-@router.post("/channels/{channel_pk}/summary", response_model=schemas.SummaryOut)
-async def summarize_channel(channel_pk: int, limit: int = 50, db: Session = Depends(get_db)):
+def _load_for_summary(channel_pk: int, limit: int, db: Session):
     channel = db.get(models.SlackChannel, channel_pk)
     if not channel:
         raise HTTPException(404, "Channel not found")
@@ -56,15 +56,45 @@ async def summarize_channel(channel_pk: int, limit: int = 50, db: Session = Depe
         .limit(limit)
         .all()
     )
-    if not messages:
-        return schemas.SummaryOut(channel_id=channel.channel_id, summary="No messages to summarize.", message_count=0)
-
     formatted = [
         {"user": m.user_name or m.user_id or "unknown", "text": m.text}
-        for m in reversed(messages)  # chronological
+        for m in reversed(messages)
     ]
-    summary = await summarize_messages(channel.name, formatted)
-    return schemas.SummaryOut(channel_id=channel.channel_id, summary=summary, message_count=len(messages))
+    return channel.channel_id, channel.name, formatted, len(messages)
+
+
+@router.post("/channels/{channel_pk}/summary", response_model=schemas.SummaryOut)
+async def summarize_channel(channel_pk: int, limit: int = 50, db: Session = Depends(get_db)):
+    channel_id, name, formatted, count = _load_for_summary(channel_pk, limit, db)
+    if count == 0:
+        return schemas.SummaryOut(channel_id=channel_id, summary="No messages to summarize.", message_count=0)
+    summary = await summarize_messages(name, formatted)
+    return schemas.SummaryOut(channel_id=channel_id, summary=summary, message_count=count)
+
+
+@router.get("/channels/{channel_pk}/summary/stream")
+async def summarize_channel_stream(channel_pk: int, limit: int = 50, db: Session = Depends(get_db)):
+    """Stream the summary as Server-Sent Events so the UI can render it live."""
+    channel_id, name, formatted, count = _load_for_summary(channel_pk, limit, db)
+
+    async def gen():
+        yield f"event: meta\ndata: {json.dumps({'channel_id': channel_id, 'message_count': count})}\n\n"
+        try:
+            async for chunk in stream_summary(name, formatted):
+                yield f"event: chunk\ndata: {json.dumps({'text': chunk})}\n\n"
+            yield "event: done\ndata: {}\n\n"
+        except Exception as e:  # noqa: BLE001 — surface error to client
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ---------- OAuth flow (only used if SLACK_CLIENT_ID/SECRET are set) ----------

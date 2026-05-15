@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./inbox.db"
     frontend_origin: str = "http://localhost:5173"
-    slack_poll_interval_seconds: int = 30
+    slack_poll_interval_seconds: int = 8
 
 
 settings = Settings()
