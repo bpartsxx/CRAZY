@@ -11,8 +11,10 @@ from . import models  # noqa: F401  (register models on Base before create_all)
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .poller import run_poller
+from .routers import drafts as drafts_router
 from .routers import slack as slack_router
 from .routers import ws as ws_router
+from .scheduler import run_scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
@@ -50,14 +52,17 @@ async def lifespan(app: FastAPI):
             await client.aclose()
 
     poller_task = asyncio.create_task(run_poller())
+    scheduler_task = asyncio.create_task(run_scheduler())
     try:
         yield
     finally:
-        poller_task.cancel()
-        try:
-            await poller_task
-        except asyncio.CancelledError:
-            pass
+        for t in (poller_task, scheduler_task):
+            t.cancel()
+        for t in (poller_task, scheduler_task):
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="Unified Inbox", lifespan=lifespan)
@@ -71,6 +76,7 @@ app.add_middleware(
 )
 
 app.include_router(slack_router.router)
+app.include_router(drafts_router.router)
 app.include_router(ws_router.router)
 
 

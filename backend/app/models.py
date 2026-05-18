@@ -50,3 +50,25 @@ class SlackMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     channel: Mapped[SlackChannel] = relationship(back_populates="messages")
+
+
+class MessageDraft(Base):
+    """An AI-drafted (or user-typed) outbound message awaiting send or scheduled.
+
+    status flow: draft -> scheduled -> sent
+                              `--> cancelled
+                              `--> failed
+    """
+    __tablename__ = "message_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    channel_pk: Mapped[int] = mapped_column(ForeignKey("slack_channels.id"), index=True)
+    body: Mapped[str] = mapped_column(Text, default="")
+    source_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="draft", index=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sent_ts: Mapped[str | None] = mapped_column(String, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

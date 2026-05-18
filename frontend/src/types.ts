@@ -21,6 +21,22 @@ export interface Summary {
   message_count: number;
 }
 
+export type DraftStatus = "draft" | "scheduled" | "sent" | "cancelled" | "failed";
+
+export interface Draft {
+  id: number;
+  channel_pk: number;
+  body: string;
+  source_summary: string | null;
+  status: DraftStatus;
+  scheduled_for: string | null;
+  sent_at: string | null;
+  sent_ts: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SlackMessageEvent {
   type: "slack.message";
   account_id: number;
@@ -33,3 +49,20 @@ export interface SlackMessageEvent {
     text: string;
   };
 }
+
+export interface DraftSentEvent {
+  type: "draft.sent";
+  draft_id: number;
+  channel_pk: number;
+  sent_ts: string;
+  scheduled?: boolean;
+}
+
+export interface DraftFailedEvent {
+  type: "draft.failed";
+  draft_id: number;
+  channel_pk: number;
+  error: string;
+}
+
+export type WsEvent = SlackMessageEvent | DraftSentEvent | DraftFailedEvent;

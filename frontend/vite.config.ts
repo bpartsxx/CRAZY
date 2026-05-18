@@ -6,9 +6,13 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/slack": "http://localhost:8000",
-      "/health": "http://localhost:8000",
-      "/ws": { target: "ws://localhost:8000", ws: true },
+      // Use 127.0.0.1 explicitly — on Windows, Node resolves `localhost` to
+      // ::1 first, but uvicorn only binds IPv4 by default, so the proxy
+      // gets ECONNREFUSED.
+      "/slack": "http://127.0.0.1:8000",
+      "/drafts": "http://127.0.0.1:8000",
+      "/health": "http://127.0.0.1:8000",
+      "/ws": { target: "ws://127.0.0.1:8000", ws: true },
     },
   },
 });

@@ -70,6 +70,18 @@ class SlackClient:
         except SlackError:
             return None
 
+    async def post_message(self, channel: str, text: str, thread_ts: str | None = None) -> dict:
+        """Send a message. Requires the chat:write scope on the token."""
+        payload: dict = {"channel": channel, "text": text}
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        r = await self._http.post("/chat.postMessage", json=payload)
+        r.raise_for_status()
+        data = r.json()
+        if not data.get("ok"):
+            raise SlackError(data.get("error", "post_message_failed"))
+        return data
+
 
 async def exchange_oauth_code(client_id: str, client_secret: str, code: str, redirect_uri: str) -> dict:
     """Exchange an OAuth v2 code for an access token."""

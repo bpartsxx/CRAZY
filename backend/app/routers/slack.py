@@ -15,7 +15,7 @@ from ..llm import stream_summary, summarize_messages
 
 router = APIRouter(prefix="/slack", tags=["slack"])
 
-OAUTH_SCOPES = "channels:history,channels:read,groups:history,groups:read,im:history,im:read,users:read"
+OAUTH_SCOPES = "channels:history,channels:read,chat:write,groups:history,groups:read,im:history,im:read,im:write,users:read"
 
 
 @router.get("/accounts", response_model=list[schemas.AccountOut])

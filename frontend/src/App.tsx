@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import { Composer } from "./components/Composer";
 import { useWebSocket } from "./hooks/useWebSocket";
-import type { Channel, Message, SlackMessageEvent, Summary } from "./types";
+import type { Channel, Draft, Message, Summary, WsEvent } from "./types";
 
 function avatarFor(name: string | null | undefined) {
   const safe = (name || "?").trim() || "?";
@@ -33,8 +34,11 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [summaryStreaming, setSummaryStreaming] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(true);
   const [unread, setUnread] = useState<Record<number, number>>({});
   const [syncing, setSyncing] = useState(false);
+  const [channelFilter, setChannelFilter] = useState("");
+  const [drafts, setDrafts] = useState<Draft[]>([]);
 
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -44,21 +48,32 @@ export default function App() {
     api.channels().then(setChannels).catch(console.error);
   }, []);
 
-  useEffect(() => {
-    refreshChannels();
-  }, [refreshChannels]);
+  const refreshDrafts = useCallback(() => {
+    if (activeChannelPk == null) {
+      setDrafts([]);
+      return;
+    }
+    api.drafts(activeChannelPk).then(setDrafts).catch(console.error);
+  }, [activeChannelPk]);
 
-  useEffect(() => {
+  const reloadMessages = useCallback(() => {
     if (activeChannelPk == null) return;
     api.messages(activeChannelPk).then((m) => {
       setMessages([...m].reverse());
       stickToBottomRef.current = true;
     });
-    setSummary(null);
-    setUnread((u) => ({ ...u, [activeChannelPk]: 0 }));
   }, [activeChannelPk]);
 
-  // Auto-scroll to bottom on new messages — but only if user is already near it.
+  useEffect(() => { refreshChannels(); }, [refreshChannels]);
+
+  useEffect(() => {
+    if (activeChannelPk == null) return;
+    reloadMessages();
+    refreshDrafts();
+    setSummary(null);
+    setUnread((u) => ({ ...u, [activeChannelPk]: 0 }));
+  }, [activeChannelPk, reloadMessages, refreshDrafts]);
+
   useEffect(() => {
     const el = listRef.current;
     if (!el || !stickToBottomRef.current) return;
@@ -78,46 +93,67 @@ export default function App() {
 
   const handleWs = useCallback(
     (raw: unknown) => {
-      const evt = raw as SlackMessageEvent;
-      if (evt.type !== "slack.message") return;
-
-      // Refresh sidebar if this message references a channel we don't know yet
-      // (e.g. a brand-new DM or a freshly-joined channel).
-      setChannels((prev) => {
-        if (prev.some((c) => c.id === evt.channel_pk)) return prev;
-        refreshChannels();
-        return prev;
-      });
-
-      if (evt.channel_pk === activeChannelPk) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === evt.message.id)) return prev;
-          return [
-            ...prev,
-            {
-              id: evt.message.id,
-              ts: evt.message.ts,
-              user_id: null,
-              user_name: evt.message.user_name,
-              text: evt.message.text,
-              created_at: new Date().toISOString(),
-            },
-          ];
+      const evt = raw as WsEvent;
+      if (evt.type === "slack.message") {
+        setChannels((prev) => {
+          if (prev.some((c) => c.id === evt.channel_pk)) return prev;
+          refreshChannels();
+          return prev;
         });
-      } else {
-        setUnread((u) => ({ ...u, [evt.channel_pk]: (u[evt.channel_pk] || 0) + 1 }));
+        if (evt.channel_pk === activeChannelPk) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === evt.message.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: evt.message.id,
+                ts: evt.message.ts,
+                user_id: null,
+                user_name: evt.message.user_name,
+                text: evt.message.text,
+                created_at: new Date().toISOString(),
+              },
+            ];
+          });
+        } else {
+          setUnread((u) => ({ ...u, [evt.channel_pk]: (u[evt.channel_pk] || 0) + 1 }));
+        }
+      } else if (evt.type === "draft.sent") {
+        if (evt.channel_pk === activeChannelPk) {
+          refreshDrafts();
+          // Let the next poll bring the message; but trigger a quick refresh anyway.
+          setTimeout(reloadMessages, 600);
+        }
+      } else if (evt.type === "draft.failed") {
+        if (evt.channel_pk === activeChannelPk) refreshDrafts();
       }
     },
-    [activeChannelPk, refreshChannels],
+    [activeChannelPk, refreshChannels, refreshDrafts, reloadMessages],
   );
 
   const connected = useWebSocket(wsUrl, handleWs);
 
   const activeChannel = channels.find((c) => c.id === activeChannelPk);
+  const filteredChannels = useMemo(() => {
+    const q = channelFilter.trim().toLowerCase();
+    if (!q) return channels;
+    return channels.filter((c) => c.name.toLowerCase().includes(q));
+  }, [channels, channelFilter]);
+
+  const channelDraftCount = useMemo(() => {
+    const m: Record<number, number> = {};
+    for (const d of drafts) {
+      if (d.status === "scheduled" || d.status === "draft") {
+        m[d.channel_pk] = (m[d.channel_pk] || 0) + 1;
+      }
+    }
+    return m;
+  }, [drafts]);
 
   const onSummarize = () => {
     if (activeChannelPk == null) return;
     summaryEsRef.current?.close();
+    setSummaryOpen(true);
     setSummaryStreaming(true);
     setSummary({ channel_id: "", summary: "", message_count: 0 });
 
@@ -130,36 +166,25 @@ export default function App() {
         })),
       onChunk: (text) =>
         setSummary((prev) =>
-          prev
-            ? { ...prev, summary: prev.summary + text }
-            : { channel_id: "", summary: text, message_count: 0 },
+          prev ? { ...prev, summary: prev.summary + text }
+               : { channel_id: "", summary: text, message_count: 0 },
         ),
       onDone: () => setSummaryStreaming(false),
       onError: (err) => {
-        setSummary({
-          channel_id: "",
-          summary: `Failed to summarize: ${err}`,
-          message_count: 0,
-        });
+        setSummary({ channel_id: "", summary: `Failed to summarize: ${err}`, message_count: 0 });
         setSummaryStreaming(false);
       },
     });
   };
 
-  // Cleanup any open SSE on unmount or channel change
-  useEffect(() => {
-    return () => summaryEsRef.current?.close();
-  }, [activeChannelPk]);
+  useEffect(() => () => summaryEsRef.current?.close(), [activeChannelPk]);
 
   const onSyncNow = async () => {
     setSyncing(true);
     try {
       await api.syncNow();
       refreshChannels();
-      if (activeChannelPk != null) {
-        const m = await api.messages(activeChannelPk);
-        setMessages([...m].reverse());
-      }
+      reloadMessages();
     } catch (e) {
       console.error(e);
     } finally {
@@ -175,9 +200,7 @@ export default function App() {
           <span className="brand-name">Inbox</span>
         </div>
         <nav className="nav">
-          <div className="nav-item active">
-            <span className="nav-dot" /> Slack
-          </div>
+          <div className="nav-item active"><span className="nav-dot" /> Slack</div>
           <div className="nav-item disabled">
             <span className="nav-dot" /> Gmail<span className="nav-tag">soon</span>
           </div>
@@ -185,12 +208,7 @@ export default function App() {
             <span className="nav-dot" /> WhatsApp<span className="nav-tag">soon</span>
           </div>
         </nav>
-        <button
-          className="sync-btn"
-          onClick={onSyncNow}
-          disabled={syncing}
-          title="Force a Slack poll right now"
-        >
+        <button className="sync-btn" onClick={onSyncNow} disabled={syncing} title="Force a Slack poll">
           {syncing ? <><span className="spinner" /> Syncing…</> : <>↻ Sync now</>}
         </button>
         <div className="status">
@@ -204,6 +222,13 @@ export default function App() {
           <h2>Channels</h2>
           <span className="panel-count">{channels.length}</span>
         </div>
+        <div className="channel-filter">
+          <input
+            placeholder="Filter channels…"
+            value={channelFilter}
+            onChange={(e) => setChannelFilter(e.target.value)}
+          />
+        </div>
         <div className="channel-scroll">
           {channels.length === 0 && (
             <div className="empty subtle">
@@ -211,18 +236,18 @@ export default function App() {
               cycle (≈8s) or hit Sync now.
             </div>
           )}
-          {channels.map((c) => {
+          {filteredChannels.map((c) => {
             const av = avatarFor(c.name);
+            const dCount = channelDraftCount[c.id] || 0;
             return (
               <button
                 key={c.id}
                 className={`channel-item ${activeChannelPk === c.id ? "active" : ""}`}
                 onClick={() => setActiveChannelPk(c.id)}
               >
-                <span className="channel-avatar" style={av.style}>
-                  {c.is_im ? "@" : "#"}
-                </span>
+                <span className="channel-avatar" style={av.style}>{c.is_im ? "@" : "#"}</span>
                 <span className="channel-name">{c.name}</span>
+                {dCount > 0 && <span className="draft-pip" title={`${dCount} pending draft${dCount > 1 ? "s" : ""}`}>⏱</span>}
                 {unread[c.id] ? <span className="badge">{unread[c.id]}</span> : null}
               </button>
             );
@@ -239,43 +264,42 @@ export default function App() {
                 <h2>{activeChannel.name}</h2>
               </div>
               <button className="btn-glow" onClick={onSummarize} disabled={summaryStreaming}>
-                {summaryStreaming ? (
-                  <>
-                    <span className="spinner" /> Streaming…
-                  </>
-                ) : (
-                  <>✨ Summarize recent</>
-                )}
+                {summaryStreaming ? <><span className="spinner" /> Streaming…</> : <>✨ Brief</>}
               </button>
             </div>
 
             {summary && (
-              <div className="summary-box">
+              <div className={`summary-box ${summaryOpen ? "" : "collapsed"}`}>
                 <div className="label">
                   <span className={`label-dot ${summaryStreaming ? "live" : ""}`} />
                   Summary
                   {summary.message_count ? ` · ${summary.message_count} messages` : ""}
                   {summaryStreaming && <span className="live-tag">live</span>}
+                  <button
+                    className="link-btn label-toggle"
+                    onClick={() => setSummaryOpen((s) => !s)}
+                  >
+                    {summaryOpen ? "hide" : "show"}
+                  </button>
+                  <button className="link-btn" onClick={() => setSummary(null)}>×</button>
                 </div>
-                <div className={`summary-body ${summaryStreaming ? "streaming" : ""}`}>
-                  {summary.summary}
-                  {summaryStreaming && <span className="caret" />}
-                </div>
+                {summaryOpen && (
+                  <div className={`summary-body ${summaryStreaming ? "streaming" : ""}`}>
+                    {summary.summary}
+                    {summaryStreaming && <span className="caret" />}
+                  </div>
+                )}
               </div>
             )}
 
             <div className="message-list" ref={listRef} onScroll={onListScroll}>
-              {messages.length === 0 && (
-                <div className="empty">No messages loaded yet.</div>
-              )}
+              {messages.length === 0 && <div className="empty">No messages loaded yet.</div>}
               {messages.map((m) => {
                 const name = m.user_name || m.user_id || "unknown";
                 const av = avatarFor(name);
                 return (
                   <div key={m.id} className="message">
-                    <div className="avatar" style={av.style}>
-                      {av.initials}
-                    </div>
+                    <div className="avatar" style={av.style}>{av.initials}</div>
                     <div className="bubble">
                       <div className="meta">
                         <span className="author">{name}</span>
@@ -287,6 +311,13 @@ export default function App() {
                 );
               })}
             </div>
+
+            <Composer
+              channel={activeChannel}
+              onSent={reloadMessages}
+              drafts={drafts}
+              refreshDrafts={refreshDrafts}
+            />
           </>
         ) : (
           <div className="empty hero">
