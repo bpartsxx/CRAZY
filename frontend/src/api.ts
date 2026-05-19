@@ -1,8 +1,41 @@
-import type { Channel, Draft, Message, Summary } from "./types";
+import type {
+  ActivitySnapshot,
+  ChatArtifact,
+  ChatMessage,
+  Channel,
+  Draft,
+  Message,
+  Summary,
+} from "./types";
 
 async function jsonOrThrow<T>(r: Response): Promise<T> {
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
+}
+
+/** True for the classic "fetch couldn't even reach the server" errors —
+ *  ECONNREFUSED, DNS failure, proxy down, etc. These are transient during
+ *  uvicorn --reload restarts, so retrying once usually succeeds. */
+function isConnectionError(e: unknown): boolean {
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return (
+    msg.includes("failed to fetch") ||
+    msg.includes("econnrefused") ||
+    msg.includes("network") ||
+    msg.includes("load failed")
+  );
+}
+
+/** fetch() with a single retry on connection-level failures (server restart window). */
+async function fetchResilient(url: string, init: RequestInit, retryDelayMs = 1500): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    if (init.signal?.aborted) throw e;
+    if (!isConnectionError(e)) throw e;
+    await new Promise((r) => setTimeout(r, retryDelayMs));
+    return await fetch(url, init);  // one retry; let any subsequent error bubble
+  }
 }
 
 export interface SummaryStreamHandlers {
@@ -142,6 +175,67 @@ export const api = {
     }).then(jsonOrThrow<{ ok: boolean; ts: string }>);
   },
 
+  // ---------- Assistant ----------
+
+  activity: () => fetch("/assistant/activity").then(jsonOrThrow<ActivitySnapshot>),
+
+  assistantChat(
+    message: string,
+    history: ChatMessage[],
+    handlers: {
+      onToken: (text: string) => void;
+      onToolStart?: (ev: { id: string; name: string; input?: unknown }) => void;
+      onToolEnd?: (ev: { id: string; name: string; output: string }) => void;
+      onArtifact?: (a: ChatArtifact) => void;
+      onInfo?: (msg: string) => void;
+      onDone?: () => void;
+      onError?: (err: string) => void;
+    },
+  ): AbortController {
+    const ctrl = new AbortController();
+    // Strip frontend-only fields before sending
+    const cleanHistory = history.map((m) => ({
+      role: m.role,
+      content: m.content,
+      tool_calls: m.tool_calls,
+      tool_call_id: m.tool_call_id,
+      name: m.name,
+    }));
+    (async () => {
+      try {
+        const resp = await fetchResilient("/assistant/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, history: cleanHistory }),
+          signal: ctrl.signal,
+        });
+        if (!resp.ok) {
+          handlers.onError?.(`${resp.status} ${await resp.text()}`);
+          return;
+        }
+        await consumeSSE(resp, (ev, data) => {
+          try {
+            const parsed = data ? JSON.parse(data) : {};
+            if (ev === "token") handlers.onToken(parsed.text ?? "");
+            else if (ev === "tool_start") handlers.onToolStart?.(parsed);
+            else if (ev === "tool_end") handlers.onToolEnd?.(parsed);
+            else if (ev === "artifact") handlers.onArtifact?.(parsed);
+            else if (ev === "info") handlers.onInfo?.(parsed.message ?? "");
+            else if (ev === "error") handlers.onError?.(parsed.error ?? "error");
+            else if (ev === "done") handlers.onDone?.();
+          } catch (err) {
+            console.error("SSE parse", err, data);
+          }
+        }, ctrl.signal);
+      } catch (e) {
+        if ((e as { name?: string }).name !== "AbortError") {
+          handlers.onError?.((e as Error).message);
+        }
+      }
+    })();
+    return ctrl;
+  },
+
   /**
    * Run the AI draft pipeline (LangGraph: summarize -> draft) and stream tokens.
    * Returns an AbortController so the caller can cancel mid-stream.
@@ -150,7 +244,7 @@ export const api = {
     const ctrl = new AbortController();
     (async () => {
       try {
-        const resp = await fetch(`/drafts/from-channel/${channelPk}/stream`, {
+        const resp = await fetchResilient(`/drafts/from-channel/${channelPk}/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ intent, message_limit: 50 }),

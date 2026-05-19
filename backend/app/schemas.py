@@ -82,3 +82,42 @@ class RefineIn(BaseModel):
 class QuickSendIn(BaseModel):
     channel_pk: int
     body: str
+
+
+# ---------- Assistant chat ----------
+
+
+class ChatHistoryItem(BaseModel):
+    role: str  # "user" | "assistant" | "tool"
+    content: str
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
+
+
+class ChatIn(BaseModel):
+    message: str
+    history: list[ChatHistoryItem] = []
+
+
+class ActivityChannel(BaseModel):
+    channel_pk: int
+    name: str
+    is_dm: bool
+    unread: int
+    last_preview: str
+    last_user: str | None
+    last_ts: str | None
+
+
+class ActivityDraft(BaseModel):
+    draft_id: int
+    channel: str
+    body_preview: str
+    status: str
+    scheduled_for: datetime | None
+
+
+class ActivityOut(BaseModel):
+    channels: list[ActivityChannel]
+    drafts: list[ActivityDraft]

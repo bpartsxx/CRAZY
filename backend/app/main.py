@@ -11,6 +11,7 @@ from . import models  # noqa: F401  (register models on Base before create_all)
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .poller import run_poller
+from .routers import assistant as assistant_router
 from .routers import drafts as drafts_router
 from .routers import slack as slack_router
 from .routers import ws as ws_router
@@ -69,7 +70,9 @@ app = FastAPI(title="Unified Inbox", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],
+    # Allow localhost + any RFC1918 private LAN address. Personal app, trusted
+    # network. Tighten this in production.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1|\[::1\]|10\.[0-9.]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9.]+|192\.168\.[0-9.]+)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,9 +80,11 @@ app.add_middleware(
 
 app.include_router(slack_router.router)
 app.include_router(drafts_router.router)
+app.include_router(assistant_router.router)
 app.include_router(ws_router.router)
 
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    from .providers import active_provider_summary
+    return {"ok": True, "providers": active_provider_summary()}

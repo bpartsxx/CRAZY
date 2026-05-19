@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from typing import AsyncIterator, TypedDict
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
-from .config import settings
+from . import providers
 
 SUMMARY_PROMPT = """You are an assistant that summarizes work-channel conversations \
 for a busy professional. Given a transcript of recent messages from a single channel, \
@@ -54,29 +54,12 @@ class DraftState(TypedDict, total=False):
     draft: str
 
 
-def _require_key() -> None:
-    if not settings.google_api_key:
-        raise RuntimeError("GOOGLE_API_KEY not set")
+def _summary_llm() -> BaseChatModel:
+    return providers.summary_llm()
 
 
-def _summary_llm() -> ChatGoogleGenerativeAI:
-    _require_key()
-    return ChatGoogleGenerativeAI(
-        model=settings.summary_model,
-        google_api_key=settings.google_api_key,
-        temperature=0.4,
-    )
-
-
-def _draft_llm() -> ChatGoogleGenerativeAI:
-    # Higher temperature gives the drafter a distinct, more creative voice
-    # even when sharing the same underlying model as the summarizer.
-    _require_key()
-    return ChatGoogleGenerativeAI(
-        model=settings.draft_model,
-        google_api_key=settings.google_api_key,
-        temperature=0.85,
-    )
+def _draft_llm() -> BaseChatModel:
+    return providers.draft_llm()
 
 
 async def summarize_node(state: DraftState) -> dict:

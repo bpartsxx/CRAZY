@@ -66,3 +66,94 @@ export interface DraftFailedEvent {
 }
 
 export type WsEvent = SlackMessageEvent | DraftSentEvent | DraftFailedEvent;
+
+
+// ---------- Assistant chat ----------
+
+export type ChatRole = "user" | "assistant" | "tool" | "system";
+
+export interface ToolCallRef {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface ChannelPickerOption {
+  channel_pk: number;
+  name: string;
+  is_dm: boolean;
+}
+
+export interface DraftPickerOption {
+  draft_id: number;
+  channel: string;
+  is_dm: boolean;
+  body_preview: string;
+  status: string;
+  scheduled_for: string | null;
+}
+
+export interface ChatArtifact {
+  type: "draft" | "sent" | "scheduled" | "channel_picker" | "draft_picker";
+  draft_id?: number;
+  channel?: string;
+  channel_pk?: number;
+  body?: string;
+  scheduled_for?: string;
+  ts?: string;
+  status?: string;
+  /** channel_picker only */
+  intent?: string;
+  channels?: ChannelPickerOption[];
+  /** draft_picker only */
+  verb?: string;
+  drafts?: DraftPickerOption[];
+  /** Set once the user clicks a chip, so we don't render again. */
+  picked?: string;
+}
+
+export interface ChatToolEvent {
+  id: string;
+  name: string;
+  status: "running" | "done";
+  input?: unknown;
+  output?: string;
+}
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+  /** Tool calls the assistant made (assistant role only). */
+  tool_calls?: ToolCallRef[];
+  /** Linked tool call id (tool role only). */
+  tool_call_id?: string;
+  /** Tool name (tool role only). */
+  name?: string;
+  /** Inline visualization of tool runs that happened during this turn. */
+  tool_events?: ChatToolEvent[];
+  /** Structured artifacts surfaced from tool outputs. */
+  artifacts?: ChatArtifact[];
+}
+
+export interface ActivityChannel {
+  channel_pk: number;
+  name: string;
+  is_dm: boolean;
+  unread: number;
+  last_preview: string;
+  last_user: string | null;
+  last_ts: string | null;
+}
+
+export interface ActivityDraft {
+  draft_id: number;
+  channel: string;
+  body_preview: string;
+  status: string;
+  scheduled_for: string | null;
+}
+
+export interface ActivitySnapshot {
+  channels: ActivityChannel[];
+  drafts: ActivityDraft[];
+}
